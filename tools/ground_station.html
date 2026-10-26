@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SkyBridge Ground Station</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #111823; --line: #1e2a3a;
+    --text: #cfe3ff; --dim: #5c7185; --green: #35d07f;
+    --amber: #ffb347; --red: #ff5c5c; --accent: #4db8ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 "SF Mono", "Cascadia Mono", Consolas, monospace;
+    display: flex; gap: 18px; padding: 24px; min-height: 100vh;
+    align-items: flex-start; justify-content: center;
+  }
+  h1 { font-size: 15px; letter-spacing: 2px; color: var(--accent); }
+  .sub { color: var(--dim); margin-bottom: 14px; font-size: 11px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px;
+  }
+  #hud { display: block; }
+  #right { width: 300px; display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .row .k { color: var(--dim); }
+  .row .v { text-align: right; }
+  .pill {
+    display: inline-block; padding: 2px 12px; border-radius: 999px;
+    font-weight: bold; letter-spacing: 1px;
+  }
+  .pill.ok { background: #12321f; color: var(--green); }
+  .pill.down { background: #331414; color: var(--red); }
+  .bar { height: 10px; background: #0a1017; border-radius: 5px;
+         overflow: hidden; margin-top: 4px; }
+  .bar > div { height: 100%; background: var(--green); width: 0%; }
+  .bar.warn > div { background: var(--amber); }
+  .bar.crit > div { background: var(--red); }
+  .sect { color: var(--dim); font-size: 10px; letter-spacing: 2px;
+          border-bottom: 1px solid var(--line); padding-bottom: 4px;
+          margin-bottom: 6px; }
+  #counts { font-size: 11px; color: var(--dim); }
+</style>
+</head>
+<body>
+  <div>
+    <h1>SKYBRIDGE GROUND STATION</h1>
+    <div class="sub">MAVLink v2 telemetry &middot; simulated vehicle &middot; no hardware</div>
+    <div class="panel"><canvas id="hud" width="440" height="440"></canvas></div>
+  </div>
+
+  <div id="right">
+    <div class="panel">
+      <div class="row"><span class="k">LINK</span>
+        <span id="link" class="pill down">WAITING</span></div>
+      <div class="row"><span class="k">STREAM</span>
+        <span class="v" id="rate">0 msg/s</span></div>
+      <div class="row"><span class="k">LAST PKT</span>
+        <span class="v" id="age">&mdash;</span></div>
+      <div id="counts"></div>
+    </div>
+
+    <div class="panel">
+      <div class="sect">BATTERY (SYS_STATUS)</div>
+      <div class="row"><span class="k">VOLTAGE</span>
+        <span class="v" id="volt">&mdash;</span></div>
+      <div class="row"><span class="k">CURRENT</span>
+        <span class="v" id="curr">&mdash;</span></div>
+      <div class="row"><span class="k">REMAINING</span>
+        <span class="v" id="rem">&mdash;</span></div>
+      <div class="bar" id="batbar"><div></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="sect">POSITION (GLOBAL_POSITION_INT)</div>
+      <div class="row"><span class="k">LAT</span>
+        <span class="v" id="lat">&mdash;</span></div>
+      <div class="row"><span class="k">LON</span>
+        <span class="v" id="lon">&mdash;</span></div>
+      <div class="row"><span class="k">REL ALT</span>
+        <span class="v" id="alt">&mdash;</span></div>
+      <div class="row"><span class="k">GROUND SPD</span>
+        <span class="v" id="gs">&mdash;</span></div>
+    </div>
+
+    <div class="panel">
+      <div class="sect">VEHICLE (HEARTBEAT)</div>
+      <div class="row"><span class="k">TYPE</span>
+        <span class="v" id="vtype">&mdash;</span></div>
+      <div class="row"><span class="k">AUTOPILOT</span>
+        <span class="v" id="ap">&mdash;</span></div>
+      <div class="row"><span class="k">CUSTOM MODE</span>
+        <span class="v" id="mode">&mdash;</span></div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const R2D = 180 / Math.PI, PX_PER_DEG = 5;
+const el = id => document.getElementById(id);
+const cvs = el("hud"), ctx = cvs.getContext("2d");
+const MAV_TYPE = {1:"FIXED WING",2:"QUADROTOR",3:"COAX",4:"HELICOPTER",
+                  10:"GROUND ROVER",12:"ANTENNA TRACKER",0:"GENERIC"};
+const MAV_AP = {3:"ARDUPILOTMEGA",4:"PX4",12:"PX4",0:"GENERIC",1:"SLUGS",
+                2:"ARDUPLANE",5:"CALC"};
+const MODE = {0:"STABILIZE",1:"ACRO",2:"ALT_HOLD",3:"AUTO",4:"GUIDED",
+              5:"LOITER",6:"RTL",7:"CIRCLE",9:"LAND",16:"POSHOLD"};
+
+let S = null; // latest snapshot
+new EventSource("/telemetry").onmessage = e => { S = JSON.parse(e.data); render(S); };
+
+function fmt(n, d=2) { return n == null ? "—" : Number(n).toFixed(d); }
+
+function render(s) {
+  const link = el("link");
+  if (s.link_ok) { link.textContent = "LINK OK"; link.className = "pill ok"; }
+  else { link.textContent = s.counts.heartbeat ? "LINK LOST" : "WAITING";
+         link.className = "pill down"; }
+  el("rate").textContent = s.msg_per_s + " msg/s";
+  el("age").textContent = s.age_s == null ? "—" : s.age_s + " s";
+  el("counts").textContent =
+    "att " + s.counts.attitude + " · pos " + s.counts.position +
+    " · bat " + s.counts.sys_status + " · hb " + s.counts.heartbeat +
+    " · dropped " + s.counts.crc_dropped;
+
+  if (s.battery) {
+    el("volt").textContent = fmt(s.battery.voltage_mv / 1000) + " V";
+    el("curr").textContent = fmt(s.battery.current_ma / 1000) + " A";
+    const rem = s.battery.battery_remaining_pct;
+    el("rem").textContent = rem + " %";
+    const bar = el("batbar");
+    bar.firstElementChild.style.width = Math.max(0, Math.min(100, rem)) + "%";
+    bar.className = "bar" + (rem < 20 ? " crit" : rem < 50 ? " warn" : "");
+  }
+  if (s.position) {
+    el("lat").textContent = fmt(s.position.lat_e7 * 1e-7, 7) + "°";
+    el("lon").textContent = fmt(s.position.lon_e7 * 1e-7, 7) + "°";
+    el("alt").textContent = fmt(s.position.rel_alt_mm / 1000, 1) + " m";
+    const vx = s.position.vx_cms, vy = s.position.vy_cms;
+    el("gs").textContent = fmt(Math.hypot(vx, vy) / 100, 1) + " m/s";
+  }
+  if (s.heartbeat) {
+    el("vtype").textContent = MAV_TYPE[s.heartbeat.mav_type] || s.heartbeat.mav_type;
+    el("ap").textContent = MAV_AP[s.heartbeat.mav_autopilot] || s.heartbeat.mav_autopilot;
+    el("mode").textContent = MODE[s.heartbeat.custom_mode] || s.heartbeat.custom_mode;
+  }
+  if (s.attitude) drawHUD(s.attitude.roll, s.attitude.pitch, s.attitude.yaw);
+}
+
+function drawHUD(rollRad, pitchRad, yawRad) {
+  const W = cvs.width, H = cvs.height, cx = W / 2, cy = H / 2;
+  const roll = rollRad * R2D, pitch = pitchRad * R2D;
+  const hdg = ((yawRad * R2D) % 360 + 360) % 360;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#060a0f";
+  ctx.fillRect(0, 0, W, H);
+
+  // --- artificial horizon: rotate world by -roll, shift by pitch ---
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, 170, 0, 2 * Math.PI); ctx.clip();
+  ctx.translate(cx, cy);
+  ctx.rotate(-roll * Math.PI / 180);
+  ctx.translate(0, pitch * PX_PER_DEG);
+
+  const sky = ctx.createLinearGradient(0, -300, 0, 0);
+  sky.addColorStop(0, "#1c5f9e"); sky.addColorStop(1, "#3a87c9");
+  ctx.fillStyle = sky; ctx.fillRect(-400, -700, 800, 700);
+  const gnd = ctx.createLinearGradient(0, 0, 0, 300);
+  gnd.addColorStop(0, "#7a5230"); gnd.addColorStop(1, "#4c3018");
+  ctx.fillStyle = gnd; ctx.fillRect(-400, 0, 800, 700);
+  ctx.strokeStyle = "#e8f2ff"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-400, 0); ctx.lineTo(400, 0); ctx.stroke();
+
+  // pitch ladder
+  ctx.lineWidth = 1.5; ctx.font = "11px monospace";
+  ctx.fillStyle = "#e8f2ff"; ctx.textAlign = "center";
+  for (let d = -90; d <= 90; d += 10) {
+    if (d === 0) continue;
+    const y = -d * PX_PER_DEG, half = Math.abs(d) % 20 === 0 ? 60 : 30;
+    ctx.globalAlpha = Math.abs(y - pitch * PX_PER_DEG) > 190 ? 0 : 1;
+    ctx.beginPath(); ctx.moveTo(-half, y); ctx.lineTo(half, y); ctx.stroke();
+    if (Math.abs(d) % 20 === 0) ctx.fillText(Math.abs(d), half + 18, y + 4);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // --- fixed aircraft symbol ---
+  ctx.strokeStyle = "#ffd34d"; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(cx - 90, cy); ctx.lineTo(cx - 30, cy); ctx.lineTo(cx - 14, cy + 14);
+  ctx.moveTo(cx + 90, cy); ctx.lineTo(cx + 30, cy); ctx.lineTo(cx + 14, cy + 14);
+  ctx.moveTo(cx, cy - 2); ctx.lineTo(cx, cy + 2); ctx.stroke();
+
+  // --- roll arc + pointer ---
+  ctx.strokeStyle = "#2b4257"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, 170, Math.PI * 1.25, Math.PI * 1.75); ctx.stroke();
+  for (const a of [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]) {
+    const r = a * Math.PI / 180, big = a % 30 === 0;
+    ctx.beginPath();
+    ctx.moveTo(cx + 170 * Math.cos(r - Math.PI / 2), cy + 170 * Math.sin(r - Math.PI / 2));
+    ctx.lineTo(cx + (big ? 155 : 162) * Math.cos(r - Math.PI / 2),
+               cy + (big ? 155 : 162) * Math.sin(r - Math.PI / 2));
+    ctx.stroke();
+  }
+  const rp = roll * Math.PI / 180;
+  ctx.fillStyle = "#ffd34d";
+  ctx.beginPath();
+  ctx.moveTo(cx + 150 * Math.cos(rp - Math.PI / 2), cy + 150 * Math.sin(rp - Math.PI / 2));
+  ctx.lineTo(cx + 138 * Math.cos(rp - Math.PI / 2 + 0.03), cy + 138 * Math.sin(rp - Math.PI / 2 + 0.03));
+  ctx.lineTo(cx + 138 * Math.cos(rp - Math.PI / 2 - 0.03), cy + 138 * Math.sin(rp - Math.PI / 2 - 0.03));
+  ctx.closePath(); ctx.fill();
+
+  // --- heading strip ---
+  ctx.save();
+  ctx.beginPath(); ctx.rect(cx - 140, H - 34, 280, 22); ctx.clip();
+  ctx.font = "11px monospace"; ctx.textAlign = "center";
+  for (let d = -60; d <= 60; d += 10) {
+    const tick = hdg + d, x = cx + d * 3;
+    const norm = ((Math.round(tick) % 360) + 360) % 360;
+    ctx.strokeStyle = "#2b4257";
+    ctx.beginPath(); ctx.moveTo(x, H - 22); ctx.lineTo(x, H - 16); ctx.stroke();
+    const label = norm % 90 === 0 ? ["N","E","S","W"][norm / 90] : String(norm);
+    ctx.fillStyle = norm % 90 === 0 ? "#4db8ff" : "#5c7185";
+    ctx.fillText(label, x, H - 18);
+  }
+  ctx.restore();
+  ctx.fillStyle = "#e8f2ff"; ctx.font = "bold 14px monospace";
+  ctx.fillText(String(Math.round(hdg)).padStart(3, "0") + "°", cx, H - 38);
+  ctx.fillStyle = "#5c7185"; ctx.font = "10px monospace";
+  ctx.fillText("ROLL " + fmt(roll, 1) + "°", cx - 100, 26);
+  ctx.fillText("PITCH " + fmt(pitch, 1) + "°", cx + 100, 26);
+}
+
+// draw an idle frame so the HUD isn't blank before first packet
+(function idle(){ if (!S) { drawHUD(0, 0, 0); requestAnimationFrame(()=>{}); } })();
+</script>
+</body>
+</html>

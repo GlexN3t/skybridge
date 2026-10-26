@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: MAVLink parser tests (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run parser unit tests
+        run: |
+          gcc -Wall -Wextra -Werror -O2 -I firmware/main \
+              tools/test_mavlink_parse.c firmware/main/mavlink_parse.c \
+              firmware/main/mavlink_decode.c \
+              -o build/test_mavlink_parse
+          ./build/test_mavlink_parse
+
+  integration:
+    name: Virtual drone <-> bridge end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run interop test (Python drone, C firmware bridge)
+        run: ./tools/test_integration.sh
+
+  firmware-build:
+    name: ESP-IDF build (esp32)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.2.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build firmware
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          cd firmware
+          idf.py build
