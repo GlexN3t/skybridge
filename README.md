@@ -46,7 +46,7 @@ Run the protocol tests right now (any machine with gcc + python3, zero
 dependencies):
 
 ```sh
-gcc -Wall -Wextra -Werror -O2 -I firmware/main \
+mkdir -p build && gcc -Wall -Wextra -Werror -O2 -I firmware/main \
     tools/test_mavlink_parse.c firmware/main/mavlink_parse.c \
     firmware/main/mavlink_decode.c \
     -o build/test_mavlink_parse && ./build/test_mavlink_parse
